@@ -1,0 +1,253 @@
+
+import pandas as pd
+
+
+
+# Загрузка данных
+df = pd.read_excel('C:/Users/Mi/Downloads/2023-2024 ассесмент база данных.xlsx')
+df.columns = df.columns.str.strip()
+df_original = df.copy()
+# Удаление ненужных столбцов
+columns_to_drop = ['ID оценочной сессии', 'Опубликование макета', 'Трудоемкость программы',
+                   'Срок реализации программы', 'Целевой уровень развития компетенции',
+                   'Дата регистрации', 'Дата начала прохождения оценки']
+df.drop(columns=columns_to_drop, inplace=True)
+
+# Преобразуем столбец 'Поток' в два новых столбца
+def convert_to_years(year_str):
+    start_year = '20' + year_str.split('/')[0]
+    end_year = '20' + year_str.split('/')[1]
+    return start_year, end_year
+df[['Год начала', 'Год окончания']] = df['Поток'].apply(lambda x: pd.Series(convert_to_years(str(x))))
+
+# Преобразуем годы в даты
+df['Дата начала'] = pd.to_datetime(df['Год начала'] + '-01-01')
+df['Дата окончания'] = pd.to_datetime(df['Год окончания'] + '-01-01')
+
+# Преобразуем числовые столбцы
+numeric_cols = ['Результат', 'Количество попыток', 'Время результирующей попытки',
+               'Итоговый уровень сформированности компетенций']
+for col in numeric_cols:
+    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+# --- ОБЩАЯ СТАТИСТИКА АССЕССМЕНТА ---
+# Общие метрики
+num_participants = df['ID пользователя'].nunique()
+num_graduates = df[df['Статус'] == 'Завершено']['ID пользователя'].nunique()
+average_score = df['Результат'].mean()
+average_time = df['Время результирующей попытки'].mean()
+
+# Статистика завершения
+classification_by_direction = {}
+unique_directions = df['Наименование оценочной сессии'].unique()
+for direction in unique_directions:
+    classification_by_direction[direction] = {
+        "Не прошли все 3 этапа": 0,
+        "Прошли все 3 этапа": 0,
+        "Отчислены": 0
+    }
+grouped = df.groupby('ID пользователя')
+for user_id, user_data in grouped:
+    direction = user_data['Наименование оценочной сессии'].iloc[0]
+    if "Отчислен" in user_data['Состояние'].values:
+        classification_by_direction[direction]["Отчислены"] += 1
+    else:
+        completed_stages = user_data[user_data['Статус'] == 'Завершено']['Этап оценки'].nunique()
+        if completed_stages == 3:
+            classification_by_direction[direction]["Прошли все 3 этапа"] += 1
+        else:
+            classification_by_direction[direction]["Не прошли все 3 этапа"] += 1
+
+# Другие метрики
+target_achieved_students = df[df['Итоговый уровень развития компетенции'].isin(['Достигнут', 'Превышен'])]
+target_achieved_by_direction = target_achieved_students.groupby('Наименование оценочной сессии')['ID пользователя'].nunique()
+listeners_by_direction = df.groupby('Наименование оценочной сессии')['ID пользователя'].nunique()
+stage_1_data = df[df['Этап оценки'] == 1]
+participants_stage_1_by_direction = stage_1_data.groupby('Наименование оценочной сессии')['ID пользователя'].nunique()
+
+# Вывод результатов первого анализа
+print("\nОБЩИЙ АНАЛИЗ")
+print(f"\n1. Число участников: {num_participants}")
+print(f"2. Число выпускников: {num_graduates}")
+print(f"3. Средний балл: {average_score:.2f}")
+print(f"4. Среднее время: {average_time:.2f}")
+
+print("\n5. Статистика завершения обучения по направлениям:")
+for direction, stats in classification_by_direction.items():
+    print(f"\n{direction}:")
+    for category, count in stats.items():
+        print(f"  {category}: {count}")
+
+print("\n6. Число студентов, достигших целевого показателя:")
+print(target_achieved_by_direction.to_string())
+
+print("\n7. Количество слушателей по направлениям:")
+print(listeners_by_direction.to_string())
+
+print("\n8. Количество участников на 1 этапе:")
+print(participants_stage_1_by_direction.to_string())
+
+# --- УРОВЕНЬ КОМПЕТЕНЦИЙ НА ЭТАПАХ АССЕССМЕНТА ---
+
+# Используем сохраненную копию данных
+df = df_original.copy()
+
+# Преобразуем текстовые значения в числовые
+level_mapping = {
+    'Минимальный исходный': 1,
+    'Базовый': 2,
+    'Продвинутый': 3,
+    'Экспертный': 4
+}
+
+# Преобразуем уровни
+if df['Итоговый уровень сформированности компетенций'].dtype == 'object':
+    df['Итоговый уровень сформированности компетенций'] = (
+        df['Итоговый уровень сформированности компетенций']
+        .map(level_mapping)
+    )
+
+# Удаление ненужных столбцов
+columns_to_drop = [
+    'ID оценочной сессии', 'Опубликование макета', 'Отраслевая принадлежность',
+    'Обучающиеся направления', 'Трудоемкость программы', 'Поток',
+    'Срок реализации программы', 'ID пользователя', 'Дата регистрации',
+    'Дата начала прохождения оценки', 'Статус', 'Результат',
+    'Количество попыток', 'Время результирующей попытки', 'Состояние'
+]
+df = df.drop(columns=columns_to_drop)
+
+# Удалим строки с пропущенными значениями в уровне компетенций
+df = df.dropna(subset=['Итоговый уровень сформированности компетенций'])
+
+# Группировка данных
+try:
+    grouped = df.groupby(['Этап оценки', 'Наименование оценочной сессии',
+                         'Наименование компетенции', 'Итоговый уровень сформированности компетенций']).size().unstack(fill_value=0)
+
+    # Проверим, есть ли данные для анализа
+    if not grouped.empty:
+        # Расчет процентного соотношения
+        percentage_grouped = grouped.div(grouped.sum(axis=1), axis=0) * 100
+
+        # Переименование столбцов
+        percentage_grouped = percentage_grouped.rename(columns={
+            1: 'Минимальный исходный (%)',
+            2: 'Базовый (%)',
+            3: 'Продвинутый (%)',
+            4: 'Экспертный (%)'
+        })
+
+        # Вывод результатов второго анализа
+        print("\n\nАНАЛИЗ УРОВНЕЙ СФОРМИРОВАННОСТИ КОМПЕТЕНЦИЙ")
+        for (stage, session, competence), data in percentage_grouped.iterrows():
+            print(f"\nЭтап оценки: {stage}")
+            print(f"Оценочная сессия: {session}")
+            print(f"Компетенция: {competence}")
+            print("Уровни сформированности компетенций:")
+            print(data.to_string())
+            print("-" * 50)
+    else:
+        print("\nНет данных для анализа уровней сформированности компетенций")
+
+except Exception as e:
+    print(f"\nОшибка при анализе уровней компетенций: {str(e)}")
+
+# --- СРЕДНИЕ ЗНАЧЕНИЯ ПО НАПРАВЛЕНИЯМ И ГОДАМ ---
+print("\n\n АНАЛИЗ СРЕДНИХ ЗНАЧЕНИЙ ")
+
+# Используем сохраненную копию данных
+df = df_original.copy()
+
+# Извлекаем год из названия оценочной сессии
+df['Год'] = df['Наименование оценочной сессии'].str.extract(r'(\d{4})')
+
+# Альтернативный вариант, если год не извлекается из названия:
+if df['Год'].isnull().all():
+    df['Год'] = df['Поток'].apply(lambda x: '20' + str(x).split('/')[0] if pd.notnull(x) else None)
+
+# Преобразуем результат в числовой формат
+df['Результат'] = pd.to_numeric(df['Результат'], errors='coerce')
+
+# Удаляем строки с пропущенными значениями
+df = df.dropna(subset=['Обучающиеся направления', 'Год', 'Результат'])
+
+# Рассчитываем средний балл по направлениям и годам
+average_score_by_direction = df.groupby(['Наименование оценочной сессии', 'Год'])['Результат'].mean().reset_index()
+
+# Рассчитываем среднее время по каждому этапу
+average_time_by_stage = df.groupby(['Этап оценки', 'Наименование оценочной сессии'])['Время результирующей попытки'].mean().reset_index()
+
+# Среднее количество попыток
+average_attempts_by_competency = df.groupby(['Год', 'Наименование оценочной сессии'])['Количество попыток'].mean()
+
+# Рассчитываем средний балл по этапам
+average_scores_by_stage = df.groupby(['Год', 'Этап оценки', 'Наименование оценочной сессии'])['Результат'].mean().reset_index()
+
+#Рассчитаем средний балл по компетенциям
+average_score_by_competency = df.groupby(['Год', 'Наименование компетенции'])['Результат'].mean()
+
+# Фильтруем данные по первому этапу
+first_stage = df[df['Этап оценки'] == 1]
+
+# Рассчитываем средний балл по компетенциям
+average_scores_by_competency = first_stage.groupby(['Год', 'Наименование компетенции'])['Результат'].mean().reset_index()
+
+# Вывод результатов
+print("\nСредний балл по направлениям и годам:")
+print(average_score_by_direction.to_string(index=False))
+print("\nСреднее значение времени по каждому этапу:")
+print(average_time_by_stage)
+print("\nСреднее количество попыток по направлениям и годам:")
+print(average_attempts_by_competency)
+print("\nСредний балл по этапам и годам:")
+print(average_scores_by_stage)
+print("\nСредний балл по компетенциям:")
+print(average_score_by_competency)
+print("\nСредний балл по компетенциям на первом этапе:")
+print(average_scores_by_competency)
+
+# --- ВЛИЯНИЕ ВРЕМЕНИ НА РЕЗУЛЬТАТ АССЕССМЕНТА ---
+print("\n\n АНАЛИЗ ВЛИЯНИЯ ВРЕМЕНИ НА РЕЗУЛЬТАТЫ ")
+
+# Используем сохраненную копию данных
+df = df_original.copy()
+
+# Преобразование данных
+df['Время результирующей попытки'] = pd.to_numeric(df['Время результирующей попытки'], errors='coerce')
+df['Итоговый уровень сформированности компетенций'] = df['Итоговый уровень сформированности компетенций'].fillna('Не указано')
+
+# Группировка данных по "Наименование оценочной сессии" и "Этап оценки"
+grouped_data = df.groupby(['Наименование оценочной сессии', 'Этап оценки'])
+
+# Функция для анализа влияния времени на результаты
+def analyze_time_impact(group):
+    avg_time = group['Время результирующей попытки'].mean()
+    faster_than_avg = group[group['Время результирующей попытки'] < avg_time]
+    slower_than_avg = group[group['Время результирующей попытки'] > avg_time]
+
+    faster_results = faster_than_avg['Итоговый уровень сформированности компетенций'].value_counts(normalize=True) * 100
+    slower_results = slower_than_avg['Итоговый уровень сформированности компетенций'].value_counts(normalize=True) * 100
+
+    return faster_results, slower_results, avg_time
+
+# Анализ и вывод результатов
+for name, group in grouped_data:
+    session_name, stage = name
+    # Пропускаем группы с недостаточными данными
+    if len(group) < 5 or group['Время результирующей попытки'].isnull().all():
+        continue
+
+    try:
+        faster_results, slower_results, avg_time = analyze_time_impact(group)
+
+        print(f"\nНаименование оценочной сессии: {session_name}, Этап оценки: {stage}")
+        print(f"Среднее время прохождения: {avg_time:.2f} минут")
+        print("\nРезультаты при прохождении быстрее среднего:")
+        print(faster_results.to_string())
+        print("\nРезультаты при прохождении дольше среднего:")
+        print(slower_results.to_string())
+        print("-" * 50)
+    except Exception as e:
+        print(f"Ошибка при анализе для {session_name}, этап {stage}: {str(e)}")
+        continue
